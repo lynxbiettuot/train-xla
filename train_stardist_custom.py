@@ -60,13 +60,13 @@ X_val_norm   = normalize(X_val,   1, 99.8)
 conf = Config2D(
     n_rays=32,
     grid=(1,1),
-    train_epochs=80,        # số epoch
-    train_steps_per_epoch=50 # bước mỗi epoch
+    train_epochs=60,        # số epoch
+    train_steps_per_epoch=80 # bước mỗi epoch
 )
 
 model = StarDist2D(
     config=conf,
-    name="my_rbc_model",
+    name="my_rbc_model_v2",
     basedir="models"
 )
 
@@ -82,4 +82,4 @@ history = model.train(
     validation_data=(X_val_norm, Y_val)
 )
 
-print("\n🎉 TRAIN XONG! Model lưu tại: models/my_rbc_model")
+print("\n🎉 TRAIN XONG! Model lưu tại: models/my_rbc_model_v2")
