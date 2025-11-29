@@ -9,6 +9,7 @@ from skimage.io import imread, imsave
 from skimage.color import rgb2gray
 from skimage.measure import regionprops, label
 from stardist.plot import render_label
+from stardist.matching import matching
 
 # =====================================
 # 1) Load model
@@ -16,142 +17,157 @@ from stardist.plot import render_label
 model = StarDist2D(None, name="my_rbc_model_v2", basedir="models")
 
 # =====================================
-# 2) Load image
+# 2) Đường dẫn folder chứa ảnh test
 # =====================================
-img_path = r"D:\Anh train\BubbleImages_\frames\frame_0040.png"
-img = imread(img_path)
-
-# Convert RGB -> Grayscale (StarDist 2D expects 1 channel)
-if img.ndim == 3:
-    img_gray = rgb2gray(img)
-else:
-    img_gray = img
+IMG_DIR  = r"D:\Anh nhan chuan bi\ground_truth_bao\ground_truth\images"
+MASK_DIR = r"D:\Anh nhan chuan bi\ground_truth_bao\ground_truth\masks"
 
 # =====================================
-# 3) Predict instance segmentation
+# 3) Folder lưu ảnh kết quả overlay + mask
 # =====================================
-labels, details = model.predict_instances(normalize(img_gray))
-imsave("result_mask.png", labels)
-print("Đã lưu mask tại: result_mask.png")
-
-# =====================================
-# 4) Render overlay màu + đánh số vật thể (GIỮ NGUYÊN)
-# =====================================
-overlay_float = render_label(labels, img_gray)
-overlay = (overlay_float[:, :, :3] * 255).astype(np.uint8)
-
-props = regionprops(labels)
-object_areas = []
-
-for i, region in enumerate(props, start=1):
-    area = region.area
-    object_areas.append(area)
-
-    cy, cx = region.centroid
-
-    cv2.putText(overlay, str(i), (int(cx), int(cy)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,0), 3)
-    cv2.putText(overlay, str(i), (int(cx), int(cy)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 1)
-
-imsave("result_numbered.png", overlay)
-print("Đã lưu ảnh đánh số tại: result_numbered.png")
+SAVE_DIR = "final_result_xla"
+os.makedirs(SAVE_DIR, exist_ok=True)
 
 # =====================================
-# 5) Tính cụm chồng chéo + object trong cụm
+# Khởi tạo danh sách lưu điểm
 # =====================================
-binary_mask = labels > 0
-cluster_labels = label(binary_mask)
-cluster_props = regionprops(cluster_labels)
-
-cluster_areas = [c.area for c in cluster_props]
-cluster_members = {i: [] for i in range(1, len(cluster_props)+1)}
-
-for obj_id, region in enumerate(props, start=1):
-    cy, cx = map(int, region.centroid)
-    cluster_id = cluster_labels[cy, cx]
-    if cluster_id > 0:
-        cluster_members[cluster_id].append(obj_id)
+all_precision = []
+all_recall = []
+all_f1 = []
 
 # =====================================
-# 6) Print thông tin ra console
+# 4) Lặp qua toàn bộ ảnh
 # =====================================
-print("\n==============================")
-print(" DIỆN TÍCH TỪNG VẬT THỂ")
-print("==============================")
-for i, area in enumerate(object_areas, start=1):
-    print(f"Vật thể {i}: {area} px")
+file_list = sorted(os.listdir(IMG_DIR))
 
-print("\n==============================")
-print(" CỤM CHỒNG CHÉO + CÁC VẬT THỂ")
-print("==============================")
-for i, area in enumerate(cluster_areas, start=1):
-    members = tuple(cluster_members[i])
-    print(f"Cụm {i}: {area} px | Các vật thể: {members}")
-
-print("\n==============================")
-print(f"TỔNG SỐ VẬT THỂ PHÁT HIỆN: {len(object_areas)}")
-print(f"TỔNG SỐ CỤM: {len(cluster_areas)}")
-print("==============================\n")
-
-# =====================================
-# 7) PSEUDO ACCURACY (PHƯƠNG PHÁP 1)
-# =====================================
-
-# ---- (a) SHAPE SCORE ---
-roundness_list = []
-ecc_list = []
-for region in props:
-    if region.perimeter == 0:
+for fname in file_list:
+    if not (fname.endswith(".png") or fname.endswith(".tif")):
         continue
-    roundness = 4 * np.pi * region.area / (region.perimeter ** 2)
-    ecc = region.eccentricity
 
-    roundness_list.append(roundness)
-    ecc_list.append(ecc)
+    print("\n================================================")
+    print(f"➡ ĐANG XỬ LÝ ẢNH: {fname}")
+    print("================================================")
 
-shape_score = (np.mean(roundness_list) * (1 - np.mean(ecc_list)))
+    TEST_IMAGE_PATH = os.path.join(IMG_DIR, fname)
+    TEST_MASK_PATH  = os.path.join(MASK_DIR, fname)
 
-# ---- (b) SEPARATION SCORE ----
-# Nhiều cụm = dính nhiều = điểm thấp
-if len(cluster_areas) > 0:
-    separation_score = 1 / (1 + (len(cluster_areas)-1)/max(1,len(props)))
-else:
-    separation_score = 1.0
+    # =====================================
+    # Load ảnh + mask
+    # =====================================
+    img = imread(TEST_IMAGE_PATH)
+    gt_mask = imread(TEST_MASK_PATH)
 
-# ---- (c) SIZE CONSISTENCY SCORE ----
-sizes = np.array(object_areas)
-size_cv = np.std(sizes) / (np.mean(sizes) + 1e-6)   # Coefficient of variation
-size_score = 1 / (1 + size_cv)                      # Ổn định = điểm cao
+    if img.ndim == 3:
+        img_gray = rgb2gray(img)
+    else:
+        img_gray = img
 
-# ---- Tính pseudo accuracy ----
-pseudo_accuracy = (shape_score + separation_score + size_score) / 3
+    # =====================================
+    # Predict segmentation
+    # =====================================
+    labels, details = model.predict_instances(normalize(img_gray))
 
-print("========= PSEUDO ACCURACY =========")
-print(f"Shape score:       {shape_score:.3f}")
-print(f"Separation score:  {separation_score:.3f}")
-print(f"Size score:        {size_score:.3f}")
-print("------------------------------------")
-print(f"PSEUDO ACCURACY:   {pseudo_accuracy:.3f}")
+    # ========= LƯU MASK =========
+    save_mask = os.path.join(SAVE_DIR, f"mask_{fname}.png")
+    imsave(save_mask, labels)
+
+    # =====================================
+    # Overlay + đánh số vật thể (KHÔNG ĐỔI LOGIC)
+    # =====================================
+    overlay_float = render_label(labels, img_gray)
+    overlay = (overlay_float[:, :, :3] * 255).astype(np.uint8)
+
+    props = regionprops(labels)
+    object_areas = []
+
+    for i, region in enumerate(props, start=1):
+        area = region.area
+        object_areas.append(area)
+
+        cy, cx = region.centroid
+
+        cv2.putText(overlay, str(i), (int(cx), int(cy)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,0), 3)
+        cv2.putText(overlay, str(i), (int(cx), int(cy)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 1)
+
+    # ========= LƯU OVERLAY =========
+    save_overlay = os.path.join(SAVE_DIR, f"overlay_{fname}.png")
+    cv2.imwrite(save_overlay, cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
+
+
+    print(f"✔ Đã lưu mask tại: {save_mask}")
+    print(f"✔ Đã lưu overlay tại: {save_overlay}")
+
+    # =====================================
+    # Tính cụm chồng chéo (KHÔNG ĐỔI LOGIC)
+    # =====================================
+    binary_mask = labels > 0
+    cluster_labels = label(binary_mask)
+    cluster_props = regionprops(cluster_labels)
+
+    cluster_areas = [c.area for c in cluster_props]
+    cluster_members = {i: [] for i in range(1, len(cluster_props)+1)}
+
+    for obj_id, region in enumerate(props, start=1):
+        cy, cx = map(int, region.centroid)
+        cluster_id = cluster_labels[cy, cx]
+        if cluster_id > 0:
+            cluster_members[cluster_id].append(obj_id)
+
+    print("\n--- DANH SÁCH VẬT THỂ ---")
+    for i, area in enumerate(object_areas, start=1):
+        print(f"Vật thể {i}: {area} px")
+
+    print("\n--- CỤM CHỒNG CHÉO ---")
+    for i, area in enumerate(cluster_areas, start=1):
+        print(f"Cụm {i}: diện tích={area} | gồm vật thể={cluster_members[i]}")
+
+    # =====================================
+    # 7) Đánh giá từng ảnh (Precision – Recall – F1)
+    # =====================================
+    m = matching(gt_mask, labels, thresh=0.5)
+
+    print("\n==== ĐIỂM ĐÁNH GIÁ ====")
+    print(f"Precision: {m.precision:.3f}")
+    print(f"Recall:    {m.recall:.3f}")
+    print(f"F1-score:  {m.f1:.3f}")
+
+    all_precision.append(m.precision)
+    all_recall.append(m.recall)
+    all_f1.append(m.f1)
+
+    # =====================================
+    # 8) Hiển thị overlay từng ảnh
+    # =====================================
+    plt.figure(figsize=(10,10))
+    plt.imshow(overlay)
+    plt.title(f"Overlay - {fname}")
+    plt.axis("off")
+    plt.show()
+
+
+# =====================================
+# 9) Tính trung bình 20 ảnh + biểu đồ
+# =====================================
+mean_precision = np.mean(all_precision)
+mean_recall = np.mean(all_recall)
+mean_f1 = np.mean(all_f1)
+
+print("\n====================================")
+print("📊 KẾT QUẢ TRUNG BÌNH TRÊN 20 ẢNH:")
+print("====================================")
+print(f"Precision TB: {mean_precision:.3f}")
+print(f"Recall TB:    {mean_recall:.3f}")
+print(f"F1 TB:        {mean_f1:.3f}")
 print("====================================\n")
 
-# =====================================
-# 8) VẼ BIỂU ĐỒ ACCURACY (THAY VÌ DIỆN TÍCH)
-# =====================================
 plt.figure(figsize=(7,6))
-plt.bar(["Shape","Separation","Size","Final"],
-        [shape_score, separation_score, size_score, pseudo_accuracy],
-        color=["skyblue","orange","green","red"])
+plt.bar(["Precision TB", "Recall TB", "F1 TB"],
+        [mean_precision, mean_recall, mean_f1],
+        color=["skyblue","orange","green"])
 plt.ylim(0,1)
-plt.title("Biểu đồ độ chính xác (Pseudo Accuracy)")
+plt.title("Biểu đồ đánh giá mô hình trên toàn bộ 20 ảnh")
 plt.ylabel("Giá trị")
 plt.grid(axis='y', linestyle='--', alpha=0.4)
-plt.show()
-
-# =====================================
-# 9) Hiển thị overlay cuối
-# =====================================
-plt.figure(figsize=(10,10))
-plt.imshow(overlay)
-plt.axis("off")
 plt.show()
